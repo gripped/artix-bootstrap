@@ -14,7 +14,7 @@ Examples
 Create a base artix distribution in directory 'myartix':
 
     # artix-bootstrap myartix
-   
+
 The same but use init openrc and a given repository source:
 
     # artix-bootstrap -i openrc -r "http://mirror1.artixlinux.org/repos" myartix
@@ -32,7 +32,7 @@ Note that some packages require some system directories to be mounted. Some of t
     # mount --bind /sys myartix/sys
     # mount --bind /dev myartix/dev
     # mount --bind /dev/pts myartix/dev/pts
-    
+ 
 License
 =======
 
