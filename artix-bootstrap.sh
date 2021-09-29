@@ -21,11 +21,17 @@ set -e -u -o pipefail
 
 # Packages needed by pacman (see get-pacman-dependencies.sh)
 PACMAN_PACKAGES=(
-  acl artix-keyring artix-mirrorlist bzip2 curl e2fsprogs expat glibc gpgme keyutils krb5 libarchive libassuan libgpg-error libidn2 libnghttp2 libpsl libssh2 libunistring lz4 openssl pacman xz zlib zstd
+  acl artix-keyring artix-mirrorlist brotli bzip2 curl e2fsprogs expat glibc gpgme keyutils krb5 libarchive libassuan libgpg-error libidn2 libnghttp2 libpsl libssh2 libunistring lz4 openssl pacman xz zlib zstd
 )
 BASIC_PACKAGES=(${PACMAN_PACKAGES[*]} filesystem)
 EXTRA_PACKAGES=(coreutils bash grep gawk file tar sed)
 DEFAULT_REPO_URL="http://mirror1.artixlinux.org/repos"
+
+cleanup() {
+  ! mountpoint -q "$CLEANUP_DEST/proc" || LC_ALL=C umount -R "$CLEANUP_DEST/proc"
+  ! mountpoint -q "$CLEANUP_DEST/sys" || LC_ALL=C umount -R "$CLEANUP_DEST/sys"
+  ! mountpoint -q "$CLEANUP_DEST/dev" || LC_ALL=C umount -R "$CLEANUP_DEST/dev"
+}
 
 stderr() { 
   echo "$@" >&2 
@@ -53,9 +59,8 @@ fetch_file() {
     status_code=$(curl --write-out %{http_code} -L -o "$FILEPATH" "$@")
     #curl -L -o "$FILEPATH" "$@"
   fi
-  
 
-  if [[ "$status_code" -ne 404 ]] ; then
+  if [[ "$status_code" -eq 200 ]] ; then
     return 0
   else
     return 1
@@ -84,19 +89,9 @@ get_default_repo() {
   echo $DEFAULT_REPO_URL
 }
 
-get_system_repo_url() {
-  local REPO_URL=$1 ARCH=$2
-  echo "${REPO_URL%/}/system/os/$ARCH"
-}
-
-get_world_repo_url() {
-  local REPO_URL=$1 ARCH=$2
-  echo "${REPO_URL%/}/world/os/$ARCH"
-}
-
-get_galaxy_repo_url() {
-  local REPO_URL=$1 ARCH=$2
-  echo "${REPO_URL%/}/galaxy/os/$ARCH"
+get_repo_url() {
+  local REPO_NAME=$1 REPO_URL=$2 ARCH=$3
+  echo "${REPO_URL%/}/$REPO_NAME/os/$ARCH"
 }
 
 get_template_repo_url() {
@@ -131,10 +126,8 @@ configure_minimal_system() {
 }
 
 fetch_packages_list() {
-  local REPO=$1 WORLD_REPO=$2 
+  local REPO=$1
   echo "$(fetch_repo_packages_list "$REPO")"
-  echo "$(fetch_repo_packages_list "$WORLD_REPO")"
-  echo "$(fetch_repo_packages_list "$GALAXY_REPO")"
 }
 
 fetch_repo_packages_list() {
@@ -146,16 +139,20 @@ fetch_repo_packages_list() {
 }
 
 install_pacman_packages() {
-  local BASIC_PACKAGES=$1 DEST=$2 LIST=$3 DOWNLOAD_DIR=$4
+  local BASIC_PACKAGES=$1 DEST=$2 DOWNLOAD_DIR=$3 SYSTEM_LIST=$4 WORLD_LIST=$5 GALAXY_LIST=$6
   debug "pacman package and dependencies: $BASIC_PACKAGES"
   
   for PACKAGE in $BASIC_PACKAGES; do
-    local FILE=$(echo "$LIST" | grep -Pm1 "^$PACKAGE-([a-zA-Z\d.:%]*)-([\d.]*)-(i686|x86_64|any)\.pkg\.tar\.(gz|xz|zst)$")
+    local REGEX="^$PACKAGE-([a-zA-Z\d.:%]*)-([\d.]*)-(i686|x86_64|any)\.pkg\.tar\.(gz|xz|zst)$"
+    local FILE=$(echo "$SYSTEM_LIST" | grep -Pm1 "$REGEX")
+    local REPO=$SYSTEM_REPO
+    test "$FILE" || { FILE=$(echo "$WORLD_LIST" | grep -Pm1 "$REGEX"); REPO=$WORLD_REPO; }
+    test "$FILE" || { FILE=$(echo "$GALAXY_LIST" | grep -Pm1 "$REGEX"); REPO=$GALAXY_REPO; }
     test "$FILE" || { debug "Error: cannot find package: $PACKAGE"; return 1; }
     local FILEPATH="$DOWNLOAD_DIR/$FILE"
     
     debug "download package: $FILE"
-    [[ -f "$FILEPATH" ]] || fetch_file "$FILEPATH" "$REPO/$FILE" || fetch_file "$FILEPATH" "$WORLD_REPO/$FILE" || fetch_file "$FILEPATH" "$GALAXY_REPO/$FILE"
+    [[ -f "$FILEPATH" ]] || fetch_file "$FILEPATH" "$REPO/$FILE"
     debug "uncompress package: $FILEPATH"
     uncompress "$FILEPATH" "$DEST"
   done
@@ -165,9 +162,15 @@ install_packages() {
   local ARCH=$1 DEST=$2 PACKAGES=$3
   debug "install packages: $PACKAGES"
   LC_ALL=C mount --types proc /proc "$DEST"/proc
+  LC_ALL=C mount --rbind /sys "$DEST"/sys
+  LC_ALL=C mount --make-rslave "$DEST"/sys
+  LC_ALL=C mount --rbind /dev "$DEST"/dev
+  LC_ALL=C mount --make-rslave "$DEST"/dev
   LC_ALL=C chroot "$DEST" /usr/bin/pacman \
     --noconfirm --arch $ARCH -Sy --overwrite='*' $PACKAGES
-  LC_ALL=C umount "$DEST"/proc
+  LC_ALL=C umount -R "$DEST"/proc
+  LC_ALL=C umount -R "$DEST"/sys
+  LC_ALL=C umount -R "$DEST"/dev
 }
 
 cleanup_files() {
@@ -205,22 +208,26 @@ main() {
   [[ -z "$REPO_URL" ]] && REPO_URL=$(get_default_repo "$ARCH")
   
   local DEST=$1
-  local REPO=$(get_system_repo_url "$REPO_URL" "$ARCH")
-  local WORLD_REPO=$(get_world_repo_url "$REPO_URL" "$ARCH")
-  local GALAXY_REPO=$(get_galaxy_repo_url "$REPO_URL" "$ARCH")
+  local SYSTEM_REPO=$(get_repo_url system "$REPO_URL" "$ARCH")
+  local WORLD_REPO=$(get_repo_url world "$REPO_URL" "$ARCH")
+  local GALAXY_REPO=$(get_repo_url galaxy "$REPO_URL" "$ARCH")
+  CLEANUP_DEST=$DEST
+  trap cleanup EXIT
   [[ -z "$DOWNLOAD_DIR" ]] && DOWNLOAD_DIR=$(mktemp -d)
   mkdir -p "$DOWNLOAD_DIR"
   [[ -z "$PRESERVE_DOWNLOAD_DIR" ]] && trap "rm -rf '$DOWNLOAD_DIR'" KILL TERM EXIT
   debug "destination directory: $DEST"
-  debug "system repository: $REPO"
+  debug "system repository: $SYSTEM_REPO"
   debug "world repository: $WORLD_REPO"
   debug "galaxy repository: $GALAXY_REPO"
   debug "temporary directory: $DOWNLOAD_DIR"
   
   # Fetch packages, install system and do a minimal configuration
   mkdir -p "$DEST"
-  local LIST=$(fetch_packages_list $REPO $WORLD_REPO $GALAXY_REPO)
-  install_pacman_packages "${BASIC_PACKAGES[*]}" "$DEST" "$LIST" "$DOWNLOAD_DIR"
+  local SYSTEM_LIST=$(fetch_packages_list $SYSTEM_REPO)
+  local WORLD_LIST=$(fetch_packages_list $WORLD_REPO)
+  local GALAXY_LIST=$(fetch_packages_list $GALAXY_REPO)
+  install_pacman_packages "${BASIC_PACKAGES[*]}" "$DEST" "$DOWNLOAD_DIR" "$SYSTEM_LIST" "$WORLD_LIST" "$GALAXY_LIST"
   configure_pacman "$DEST" "$ARCH"
   configure_minimal_system "$DEST"
   install_packages "$ARCH" "$DEST" "base ${INIT} elogind-${INIT}"
