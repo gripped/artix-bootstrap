@@ -178,6 +178,8 @@ install_packages() {
 cleanup_files() {
   DEST=$1
   rm "$DEST/.BUILDINFO" "$DEST/.INSTALL" "$DEST/.MTREE" "$DEST/.PKGINFO"
+  rm "$DEST/etc/pacman.conf"
+  mv "$DEST/etc/pacman.conf.pacnew" "$DEST/etc/pacman.conf"
 }
 
 show_usage() {
