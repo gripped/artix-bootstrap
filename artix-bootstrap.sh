@@ -21,7 +21,7 @@ set -e -u -o pipefail
 
 # Packages needed by pacman (see get-pacman-dependencies.sh)
 PACMAN_PACKAGES=(
-  acl artix-mirrorlist brotli bzip2 coreutils curl e2fsprogs expat gawk gettext gcc-libs glibc gnupg gpgme grep icu keyutils krb5 libarchive libassuan libgpg-error libidn2 libnghttp2 libnghttp3 libngtcp2 libpsl libseccomp libssh2 libunistring libxml2 lz4 openssl pacman xz zlib zstd
+  acl artix-mirrorlist brotli bzip2 coreutils curl e2fsprogs expat gawk gettext gcc-libs glibc gnupg gpgme grep icu keyutils krb5 libarchive libassuan libgcc libgpg-error libidn2 libnghttp2 libnghttp3 libngtcp2 libpsl libseccomp libssh2 libstdc++ libunistring libxml2 lz4 openssl pacman xz zlib zstd
 )
 BASIC_PACKAGES=(${PACMAN_PACKAGES[*]} filesystem)
 EXTRA_PACKAGES=(coreutils bash grep gawk file tar sed)
@@ -69,7 +69,7 @@ fetch_file() {
 
 uncompress() {
   local FILEPATH=$1 DEST=$2
-  
+ 
   case "$FILEPATH" in
     *.gz) 
       tar xzf "$FILEPATH" -C "$DEST";;
@@ -104,6 +104,7 @@ configure_pacman() {
   debug "configure DNS and pacman"
   cp "/etc/resolv.conf" "$DEST/etc/resolv.conf"
   SERVER=$(get_template_repo_url "$REPO_URL" "$ARCH")
+  mkdir -p "$DEST/etc/pacman.d"
   echo "Server = $SERVER" > "$DEST/etc/pacman.d/mirrorlist"
 }
 
@@ -144,8 +145,9 @@ install_pacman_packages() {
   local BASIC_PACKAGES=$1 DEST=$2 DOWNLOAD_DIR=$3 SYSTEM_LIST=$4 WORLD_LIST=$5 GALAXY_LIST=$6
   debug "pacman package and dependencies: $BASIC_PACKAGES"
   
-  for PACKAGE in $BASIC_PACKAGES; do
-    local REGEX="^$PACKAGE-([a-zA-Z\d.:%]*)-([\d.]*)-(i686|x86_64|any)\.pkg\.tar\.(gz|xz|zst)$"
+  for PACKAGE in $BASIC_PACKAGES; do 
+    local ESC_PACKAGE=$(echo "$PACKAGE" | sed 's/\+/%2B/g')
+    local REGEX="^$ESC_PACKAGE-([a-zA-Z\d.:%]*)-([\d.]*)-(i686|x86_64|any)\.pkg\.tar\.(gz|xz|zst)$"
     local FILE=$(echo "$SYSTEM_LIST" | grep -Pm1 "$REGEX")
     local REPO=$SYSTEM_REPO
     test "$FILE" || { FILE=$(echo "$WORLD_LIST" | grep -Pm1 "$REGEX"); REPO=$WORLD_REPO; }
